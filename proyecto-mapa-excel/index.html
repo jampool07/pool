@@ -1,0 +1,230 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor de Ubicaciones</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .panel {
+            padding: 15px;
+            background: #2c3e50;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        #map {
+            width: 100%;
+            flex: 1;
+            min-height: 400px;
+        }
+        
+        .btn {
+            padding: 12px 20px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        
+        .btn:hover {
+            background: #229954;
+        }
+        
+        .btn:active {
+            transform: scale(0.98);
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .status {
+            color: white;
+            font-size: 14px;
+            margin-left: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <button class="btn" onclick="document.getElementById('fileInput').click()">
+            Subir Excel/CSV
+        </button>
+        <input id="fileInput" type="file" accept=".xlsx,.xls,.csv">
+        <button class="btn" onclick="generarMapa()">Generar Mapa</button>
+        <div class="status" id="status">Listo para cargar archivo</div>
+    </div>
+    
+    <div id="map"></div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    
+    <script>
+        let datosExcel = [];
+        let map;
+        let markers;
+        
+        // Inicializar mapa
+        function initMap() {
+            try {
+                map = L.map("map").setView([-6.64, -79.39], 14);
+                
+                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                    attribution: '© OpenStreetMap contributors',
+                    maxZoom: 19
+                }).addTo(map);
+                
+                markers = L.featureGroup().addTo(map);
+                
+                updateStatus("Mapa cargado correctamente");
+            } catch (error) {
+                console.error("Error al inicializar mapa:", error);
+                updateStatus("Error al cargar mapa");
+            }
+        }
+        
+        // Actualizar mensaje de estado
+        function updateStatus(msg) {
+            document.getElementById("status").textContent = msg;
+        }
+        
+        // Manejar carga de archivo
+        document.getElementById("fileInput").addEventListener("change", (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            updateStatus("Procesando archivo...");
+            const name = file.name.toLowerCase();
+            
+            if (name.endsWith(".csv")) {
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: function(results) {
+                        datosExcel = results.data;
+                        updateStatus(`Archivo cargado: ${datosExcel.length} registros`);
+                    },
+                    error: function(error) {
+                        console.error("Error al leer CSV:", error);
+                        updateStatus("Error al leer CSV");
+                    }
+                });
+            } else if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+                let reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, { type: "array" });
+                        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                        datosExcel = XLSX.utils.sheet_to_json(sheet);
+                        updateStatus(`Archivo cargado: ${datosExcel.length} registros`);
+                    } catch (error) {
+                        console.error("Error al leer Excel:", error);
+                        updateStatus("Error al leer Excel");
+                    }
+                };
+                reader.onerror = function() {
+                    updateStatus("Error al cargar archivo");
+                };
+                reader.readAsArrayBuffer(file);
+            } else {
+                updateStatus("Formato no soportado");
+            }
+        });
+        
+        // Generar marcadores en el mapa
+        function generarMapa() {
+            if (datosExcel.length === 0) {
+                alert("Por favor, sube un archivo Excel o CSV primero.");
+                return;
+            }
+            
+            markers.clearLayers();
+            let contadorValidos = 0;
+            let contadorInvalidos = 0;
+            
+            datosExcel.forEach((row, index) => {
+                // Buscar columna de descripción (varias variantes)
+                let desc = row.descripcion || row.Descripcion || row.DESCRIPCION || 
+                          row.desc || row.Desc || row.nombre || row.Nombre || 
+                          `Ubicación ${index + 1}`;
+                
+                // Buscar columna de coordenadas
+                let coord = row.coordenada || row.Coordenada || row.COORDENADA ||
+                           row.coordenadas || row.Coordenadas || row.COORDENADAS ||
+                           row.coord || row.Coord;
+                
+                if (!coord) {
+                    contadorInvalidos++;
+                    return;
+                }
+                
+                // Limpiar y normalizar coordenadas
+                coord = String(coord).replace(/;/g, ",").replace(/\s+/g, "");
+                let partes = coord.split(",");
+                
+                if (partes.length !== 2) {
+                    contadorInvalidos++;
+                    return;
+                }
+                
+                let lat = parseFloat(partes[0]);
+                let lon = parseFloat(partes[1]);
+                
+                if (isNaN(lat) || isNaN(lon)) {
+                    contadorInvalidos++;
+                    return;
+                }
+                
+                // Crear marcador
+                let marker = L.marker([lat, lon]).bindPopup(`
+                    <strong>${desc}</strong><br>
+                    Lat: ${lat.toFixed(6)}<br>
+                    Lon: ${lon.toFixed(6)}
+                `);
+                markers.addLayer(marker);
+                contadorValidos++;
+            });
+            
+            // Ajustar vista del mapa
+            if (contadorValidos > 0) {
+                try {
+                    map.fitBounds(markers.getBounds(), { padding: [40, 40] });
+                    updateStatus(`${contadorValidos} marcadores creados${contadorInvalidos > 0 ? ` (${contadorInvalidos} omitidos)` : ''}`);
+                } catch (e) {
+                    updateStatus(`${contadorValidos} marcadores creados`);
+                }
+            } else {
+                alert("No se encontraron coordenadas válidas en el archivo.\n\nVerifica que tu archivo tenga:\n- Una columna 'coordenada' o 'Coordenada'\n- Formato: latitud,longitud (ejemplo: -6.64,-79.39)");
+                updateStatus("Sin coordenadas válidas");
+            }
+        }
+        
+        // Inicializar al cargar la página
+        window.addEventListener('load', initMap);
+    </script>
+</body>
+</html>
